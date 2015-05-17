@@ -19,5 +19,16 @@
       <version>3.8.1</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+    	<groupId>com.thoughtworks.xstream</groupId>
+    	<artifactId>xstream</artifactId>
+    	<version>1.4.8</version>
+    </dependency>
   </dependencies>
+  
+  <!-- always define the needed encoding to avoid maven warnings -->
+	<properties>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+	</properties>
+	
 </project>

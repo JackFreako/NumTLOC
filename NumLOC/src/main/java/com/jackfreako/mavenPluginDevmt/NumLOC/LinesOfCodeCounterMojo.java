@@ -20,62 +20,239 @@ import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Scanner;
+
+import com.thoughtworks.xstream.XStream;
+import com.jackfreako.mavenPluginDevmt.NumLOC.*;
 
 /**
- * Goal which touches a timestamp file.
+ * Goal which counts the total lines of code
  *
- * @goal touch
+ * @goal tlocc
  * 
- * @phase process-sources
+ * @phase test
  */
 public class LinesOfCodeCounterMojo
     extends AbstractMojo
 {
-    /**
+	
+	/** For each file type (extension) one entry in the map**/
+	private final Map<String,CountResult> fileTypes = new HashMap<String,CountResult>(100);
+
+	/** List with all files to be counted **/
+	private final List<String> files = new ArrayList<String>(10000);
+	
+	/** Empty lines of current file**/
+	private  int currentFileEmptyLines = 0;
+	
+	/** Total Code lines of current file**/
+	private  int currentFileTotalLines = 0;
+	
+		
+	/**
      * Location of the file.
      * @parameter expression="${project.build.directory}"
      * @required
      */
-    private File outputDirectory;
+    private final File outputDirectory = new File("");
+    
+    
+    /**
+     * Project's source directory as specified in the POM.
+     * @parameter expression="${project.source.directory}"
+     * @required
+     */
+    private final File sourceDirectory = new File("");
 
-    public void execute()
-        throws MojoExecutionException
+
+    /**
+     * Project's source directory for test code as specified in the POM.
+     * @parameter expression="${project.build.testSourceDirectory}"
+     * @required
+     */
+    private final File testSourceDirectory = new File("");
+
+    
+    /**
+     *  @parameter expression="${encoding}"
+	 *             default-value="${project.build.sourceEncoding}"
+     */
+    private final String encoding = "UTF-8";
+    
+    
+
+    
+    public void execute() throws MojoExecutionException
     {
-        File f = outputDirectory;
+        
+    	if (!ensureTargetDirectoryExists()) {
+			getLog().error("Could not create target directory");
+			return;
+		}
 
-        if ( !f.exists() )
-        {
-            f.mkdirs();
-        }
+		if (!sourceDirectory.exists()) {
+			getLog().error("Source directory \"" + sourceDirectory + "\" is not valid.");
+			return;
+		}
 
-        File touch = new File( f, "touch.txt" );
+		fillListWithAllFilesRecursiveTask(sourceDirectory, files);
+		fillListWithAllFilesRecursiveTask(testSourceDirectory, files);
 
-        FileWriter w = null;
-        try
-        {
-            w = new FileWriter( touch );
+		for (final String filePath : files) {
+			resetCurrentCounts();
+			countCurrentFile(filePath);
+			writeCurrentResultsToMavenLogger(filePath);
+			storeCurrentResults(filePath);
+		}
 
-            w.write( "touch.txt" );
-        }
-        catch ( IOException e )
-        {
-            throw new MojoExecutionException( "Error creating file " + touch, e );
-        }
-        finally
-        {
-            if ( w != null )
-            {
-                try
-                {
-                    w.close();
-                }
-                catch ( IOException e )
-                {
-                    // ignore
-                }
-            }
-        }
+		writeOutputFileFromStoredResults();
+       
     }
+    
+    
+    public void storeCurrentResults(final String filePath) {
+		final String extension = getExtension(filePath);
+		if (fileTypes.containsKey(extension)) {
+			fileTypes.get(extension).addEmpty(currentFileEmptyLines);
+			fileTypes.get(extension).addTotal(currentFileTotalLines);
+			fileTypes.get(extension).incrementFiles();
+		} else {
+			final CountResult item = new CountResult();
+			item.addEmpty(currentFileEmptyLines);
+			item.addTotal(currentFileTotalLines);
+			item.incrementFiles();
+			fileTypes.put(extension, item);
+		}
+	}
+    
+    private boolean ensureTargetDirectoryExists(){
+		
+		if(this.outputDirectory.exists()){
+			return true;
+		}
+		
+		return this.outputDirectory.mkdirs();
+	}
+	
+	
+	public void resetCurrentCounts(){
+		this.currentFileEmptyLines = 0;
+		this.currentFileTotalLines = 0;		
+	}
+	
+	
+	/** This is the backbone of the Counting Mechanism**/
+	public void countCurrentFile(final String filePath){
+		
+		Scanner scanner = null;
+		
+		try{
+			
+			scanner = new Scanner(new File(filePath), this.encoding);
+			String line = scanner.nextLine();
+			
+			while(scanner.hasNext()){
+				
+				this.currentFileTotalLines++;
+				
+				if(line.trim().isEmpty()){
+					this.currentFileEmptyLines++;
+				}
+				
+				line = scanner.nextLine();
+			}
+		}
+		catch(final IOException e){
+			getLog().error(e.getMessage());
+		}
+		
+		finally{
+			if(scanner!=null)
+				scanner.close();
+		}
+		
+	}
+	
+	
+	
+	/** Reflect the result in the MavenLogger **/
+    public void writeCurrentResultsToMavenLogger(final String filePath){
+    	
+    	final StringBuffer message = new StringBuffer(100);
+    	
+    	message.append(this.currentFileTotalLines).append('\t');    	
+    	message.append(this.currentFileEmptyLines).append('\t');
+    	message.append(filePath);
+    	
+    	getLog().info(message);
+    }
+    
+    
+    
+    private void writeOutputFileFromStoredResults() {
+		OutputStreamWriter out = null;
+		try {
+			final StringBuffer path = new StringBuffer();
+			path.append(outputDirectory);
+			path.append(System.getProperty("file.separator"));
+			path.append("tlocc-result.xml");
+
+			final FileOutputStream fos = new FileOutputStream(path.toString());
+			out = new OutputStreamWriter(fos, encoding);
+
+			final XStream xstream = new XStream();
+			xstream.alias("data", CountResult.class);
+			out.write(xstream.toXML(fileTypes));
+
+		} catch (final IOException e) {
+			getLog().error(e.getMessage());
+		} finally {
+			if (null != out) {
+				try {
+					out.close();
+				} catch (final IOException e) {
+					getLog().error(e.getMessage());
+				}
+			}
+		}
+	}
+
+    
+    
+    public static void fillListWithAllFilesRecursiveTask(final File root, final List<String> files){
+    	
+    	if (root.isFile()) {
+			files.add(root.getPath());
+			return;
+		}
+    	
+		for (final File file : root.listFiles()) {
+			if (file.isDirectory()) {
+				fillListWithAllFilesRecursiveTask(file, files);
+			} else {
+				files.add(file.getPath());
+			}
+		}
+    }
+    
+    public static String getExtension(final String filePath) {
+		final int dotPos = filePath.lastIndexOf(".");
+		if (-1 == dotPos) {
+			return "undefined";
+		} else {
+			return filePath.substring(dotPos);
+		}
+	}
+
+    
+    
+    
 }
